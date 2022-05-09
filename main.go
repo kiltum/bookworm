@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 func listZipFiles(file *zip.File) error {
@@ -57,7 +58,7 @@ func collectFiles(path string) []string {
 						}
 						defer fileread.Close()
 
-						fileList = append(fileList, fileName+"@"+file.Name)
+						//fileList = append(fileList, fileName+"@"+file.Name+strconv.FormatUint(file.UncompressedSize64, 10))
 
 						//fmt.Fprintf(os.Stdout, "%s:", file.Name)
 
@@ -70,7 +71,12 @@ func collectFiles(path string) []string {
 					}
 
 				} else {
-					fileList = append(fileList, fileName)
+					fi, err := os.Stat(fileName)
+					if err != nil {
+						//return err
+					}
+
+					fileList = append(fileList, fileName+"@"+strconv.FormatInt(fi.Size(), 10)+"@"+fi.ModTime().Format("2006-01-02 15:04:05"))
 				}
 			}
 		}
