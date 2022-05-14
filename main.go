@@ -1,13 +1,13 @@
 package main
 
 import (
-	"archive/zip"
+	"context"
+	"database/sql"
 	"fmt"
 	"github.com/spf13/viper"
 	"log"
 	"os"
 	"path/filepath"
-	"strconv"
 	"time"
 )
 
@@ -21,92 +21,113 @@ func contains(s []string, e string) bool {
 	return false
 }
 
-func collectFiles(path string) []string {
-	var fileList []string
+var collectedBefore uint64
+var collected uint64
+
+func printCollected() {
+	for range time.Tick(time.Second * 1) {
+		fmt.Printf("Collected %d/%d files      \r", collected, collectedBefore)
+	}
+}
+
+func collectFiles(path string) {
 	var extensions = []string{".zip", ".fb2"} // what we know to handle now
+
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Defer a rollback in case anything fails.
+	defer tx.Rollback()
+
+	stmtInsertFiles, err := db.PrepareContext(ctx, "INSERT INTO files(path,size,modtime) VALUES (?,?,?)")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stmtCheckFiles, err := db.PrepareContext(ctx, "SELECT size, modtime FROM files WHERE PATH = ?")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	db.QueryRow("SELECT count(*) FROM files").Scan(&collectedBefore)
+
+	go printCollected()
 
 	files, _ := os.ReadDir(path)
 	for _, f := range files {
 		fileName := path + string(os.PathSeparator) + f.Name()
 		if f.IsDir() == true {
-			fileList = append(fileList, collectFiles(fileName)...)
+			collectFiles(fileName)
 		} else {
 			if contains(extensions, filepath.Ext(fileName)) {
-				if filepath.Ext(fileName) == ".zip" {
-
-					read, err := zip.OpenReader(fileName)
-					if err != nil {
-						msg := "Failed to open: %s"
-						log.Fatalf(msg, err)
-					}
-					defer read.Close()
-
-					for _, file := range read.File {
-						fileread, err := file.Open()
-						if err != nil {
-							//msg := "Failed to open zip %s for reading: %s"
-							//return fmt.Errorf(msg, file.Name, err)
-						}
-						defer fileread.Close()
-
-						fileList = append(fileList, fileName+"|"+file.Name+"|"+strconv.FormatUint(file.UncompressedSize64, 10)+"|"+file.ModTime().Format(time.RFC3339))
-
-						//fmt.Fprintf(os.Stdout, "%s:", file.Name)
-
-						if err != nil {
-							//msg := "Failed to read zip %s for reading: %s"
-							//return fmt.Errorf(msg, file.Name, err)
-						}
-
-						//fmt.Println()
-					}
-
-				} else { // no, its usual uncompressed file.fb2
-					fi, err := os.Stat(fileName)
-					if err != nil {
-						//return err
-					}
-
-					fileList = append(fileList, fileName+"|"+strconv.FormatInt(fi.Size(), 10)+"|"+fi.ModTime().Format(time.RFC3339))
+				fi, err := os.Stat(fileName)
+				if err != nil {
+					//return err
 				}
+
+				var fs int64
+				var md string
+				err = stmtCheckFiles.QueryRow(fileName).Scan(&fs, &md)
+				if err != nil {
+					if err == sql.ErrNoRows {
+						// insert as new file, that need to be parsed
+						stmtInsertFiles.Exec(fileName, fi.Size(), fi.ModTime().Format(time.RFC3339))
+						//fmt.Println("NONE  " + fileName)
+					}
+				} else {
+					if fi.Size() != fs {
+						// Change to re-parse
+					}
+					if md != fi.ModTime().Format(time.RFC3339) {
+						// Change to re-parse
+					}
+					// Ok, file is already in database with same time and size, so do nothing
+				}
+				collected = collected + 1
 			}
 		}
 	}
-	return fileList
+	// Commit the transaction.
+	if err = tx.Commit(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
 
-	//viper.Set("sqldriver", "sqlite3")
-
 	viper.SetConfigName("bookworm")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath("/home/kiltum/projects/bookworm/")
-	//viper.AddConfigPath(".")
-	//viper.AddConfigPath("/etc/bookworm/")
-	//viper.AddConfigPath("$HOME/.bookworm")
+	viper.AddConfigPath(".")
+	viper.AddConfigPath("/etc/bookworm/")
+	viper.AddConfigPath("$HOME/.bookworm")
 
 	viper.SetEnvPrefix("bw")
 	viper.BindEnv("sqldriver")
+	viper.BindEnv("path")
 
-	//viper.WriteConfig()
-	//viper.SafeWriteConfig()
-	//viper.WriteConfigAs("/home/kiltum/projects/bookworm/")
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
 			fmt.Println("config not found")
-			// Config file not found; ignore error if desired
+			viper.Set("sqldriver", "sqlite3")
+			viper.Set("path", []string{"."})
+			viper.SafeWriteConfig()
 		} else {
-			fmt.Println("error in config")
-			// Config file was found but another error was produced
+			fmt.Println(viper.ConfigFileUsed(), err)
+			os.Exit(1)
 		}
 	}
 
 	fmt.Println(viper.Get("sqldriver"))
+	fmt.Println(viper.Get("path"))
 
 	loadDatabase("db.sql")
-	fmt.Println(s)
-	//fl := collectFiles("/home/kiltum/Calibre Library")
+	defer closeDatabase()
+
+	collectFiles("/home/kiltum/Calibre Library")
+	collectFiles("/mnt/swamp/Torrent")
 	//for _, file := range fl {
 	//	fmt.Println(file)
 	//}

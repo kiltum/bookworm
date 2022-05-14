@@ -2,32 +2,35 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	_ "github.com/mattn/go-sqlite3"
 	"log"
 )
 
-var s string = "HHHHHHHHH"
+var db *sql.DB
+
+var sl3_create string = `CREATE TABLE IF NOT EXISTS files
+                         (file_id INTEGER PRIMARY KEY,
+                         path TEXT NOT NULL,
+						 size INTEGER,
+                         modtime TEXT NOT NULL);
+`
 
 func loadDatabase(filename string) {
-	db, err := sql.Open("sqlite3", filename)
+	var err error
+	db, err = sql.Open("sqlite3", filename)
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer db.Close()
-
-	db1, err1 := sql.Open("sqlite3", ":memory:")
-	if err1 != nil {
-		log.Fatalf("cannot open an SQLite memory database: %v", err)
-	}
-	defer db1.Close()
-
-	_, err = db.Exec("CREATE TABLE unix_time (time datetime); INSERT INTO unix_time (time) VALUES (strftime('%Y-%m-%dT%H:%MZ','now'))")
+	_, err = db.Exec(sl3_create)
 	if err != nil {
 		log.Fatalf("cannot create schema: %v", err)
 	}
+	fmt.Println("DB opened")
 
 }
 
-func saveDatabase(filename string) {
-
+func closeDatabase() {
+	db.Close() // TODO: need ? check for closing error
+	fmt.Println("DB closed")
 }
